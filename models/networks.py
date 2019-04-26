@@ -21,6 +21,8 @@ def get_norm_layer(norm_type='instance'):
         norm_layer = functools.partial(nn.BatchNorm2d, affine=True, track_running_stats=True)
     elif norm_type == 'instance':
         norm_layer = functools.partial(nn.InstanceNorm2d, affine=False, track_running_stats=False)
+    elif norm_type == 'layer':
+        norm_layer = functools.partial(nn.LayerNorm, elementwise_affine=False) #LOUIS not sure about arguments
     elif norm_type == 'none':
         norm_layer = None
     else:
@@ -262,13 +264,13 @@ class GANLoss(nn.Module):
             loss = self.loss(prediction, target_tensor)
         elif self.gan_mode == 'wgangp':
             if target_is_real:
-                loss = -prediction.mean()
+                loss = -prediction.mean()  #LOUIS (average pooling?)
             else:
                 loss = prediction.mean()
         return loss
 
 
-def cal_gradient_penalty(netD, real_data, fake_data, device, type='mixed', constant=1.0, lambda_gp=10.0):
+def calc_gradient_penalty(netD, real_data, fake_data, device, type='mixed', constant=1.0, lambda_gp=10.0):
     """Calculate the gradient penalty loss, used in WGAN-GP paper https://arxiv.org/abs/1704.00028
 
     Arguments:
@@ -532,7 +534,7 @@ class UnetSkipConnectionBlock(nn.Module):
 class NLayerDiscriminator(nn.Module):
     """Defines a PatchGAN discriminator"""
 
-    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d):
+    def __init__(self, input_nc, ndf=64, n_layers=3, norm_layer=nn.BatchNorm2d, hw = 128):
         """Construct a PatchGAN discriminator
 
         Parameters:
@@ -542,8 +544,12 @@ class NLayerDiscriminator(nn.Module):
             norm_layer      -- normalization layer
         """
         super(NLayerDiscriminator, self).__init__()
+
+        use_layer_norm = False
         if type(norm_layer) == functools.partial:  # no need to use bias as BatchNorm2d has affine parameters
             use_bias = norm_layer.func != nn.BatchNorm2d
+            if norm_layer.func == nn.LayerNorm:
+                use_layer_norm = True 
         else:
             use_bias = norm_layer != nn.BatchNorm2d
 
@@ -555,19 +561,38 @@ class NLayerDiscriminator(nn.Module):
         for n in range(1, n_layers):  # gradually increase the number of filters
             nf_mult_prev = nf_mult
             nf_mult = min(2 ** n, 8)
-            sequence += [
+
+            if use_layer_norm:
+                hw = hw//2
+                sequence += [
+                nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
+                norm_layer([ndf * nf_mult, hw, hw]),
+                nn.LeakyReLU(0.2, True)
+                ]
+            else:
+                sequence += [
                 nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
                 norm_layer(ndf * nf_mult),
                 nn.LeakyReLU(0.2, True)
-            ]
+                ]
 
         nf_mult_prev = nf_mult
         nf_mult = min(2 ** n_layers, 8)
-        sequence += [
+
+        if use_layer_norm:
+            hw = hw - 1
+            sequence += [
+            nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
+            norm_layer([ndf * nf_mult, hw, hw]),
+            nn.LeakyReLU(0.2, True)
+            ]
+
+        else:
+            sequence += [
             nn.Conv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
             norm_layer(ndf * nf_mult),
             nn.LeakyReLU(0.2, True)
-        ]
+            ]
 
         sequence += [nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)

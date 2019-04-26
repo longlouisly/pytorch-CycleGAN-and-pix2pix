@@ -44,7 +44,7 @@ class Pix2PixModel(BaseModel):
         """
         BaseModel.__init__(self, opt)
         # specify the training losses you want to print out. The training/test scripts will call <BaseModel.get_current_losses>
-        self.loss_names = ['G_GAN', 'G_L1', 'D_real', 'D_fake']
+        self.loss_names = ['G_GAN', 'G_L1', 'D_real', 'D_fake', 'D']
         # specify the images you want to save/display. The training/test scripts will call <BaseModel.get_current_visuals>
         self.visual_names = ['real_A', 'fake_B', 'real_B']
         # specify the models you want to save to the disk. The training/test scripts will call <BaseModel.save_networks> and <BaseModel.load_networks>
@@ -57,8 +57,14 @@ class Pix2PixModel(BaseModel):
                                       not opt.no_dropout, opt.init_type, opt.init_gain, self.gpu_ids)
 
         if self.isTrain:  # define a discriminator; conditional GANs need to take both input and output images; Therefore, #channels for D is input_nc + output_nc
+
+            if opt.gan_mode == 'wgangp':
+                normalization = 'layer'
+            else:
+                normalization = opt.norm
+                
             self.netD = networks.define_D(opt.input_nc + opt.output_nc, opt.ndf, opt.netD,
-                                          opt.n_layers_D, opt.norm, opt.init_type, opt.init_gain, self.gpu_ids)
+                                          opt.n_layers_D, normalization, opt.init_type, opt.init_gain, self.gpu_ids)
 
         if self.isTrain:
             # define loss functions
@@ -97,9 +103,18 @@ class Pix2PixModel(BaseModel):
         real_AB = torch.cat((self.real_A, self.real_B), 1)
         pred_real = self.netD(real_AB)
         self.loss_D_real = self.criterionGAN(pred_real, True)
-        # combine loss and calculate gradients
+
         self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
-        self.loss_D.backward()
+
+        if self.opt.gan_mode == 'wgangp':
+            # wgan-gp
+            gradient_penalty, gradients = networks.calc_gradient_penalty(self.netD, real_AB.detach(), fake_AB.detach(), self.device)
+            #gradient_penalty.backward(retain_graph=True)
+            self.loss_D = self.loss_D + gradient_penalty
+
+
+        # combine loss and calculate gradients
+        self.loss_D.backward(retain_graph=True)
 
     def backward_G(self):
         """Calculate GAN and L1 loss for the generator"""
